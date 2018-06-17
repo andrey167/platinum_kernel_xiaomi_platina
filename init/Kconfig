@@ -1236,6 +1236,41 @@ config SOCK_CGROUP_DATA
 
 endif # CGROUPS
 
+config SCHED_BOOST
+	bool "Scheduler boost support"
+	help
+	  Scheduler boost is a mechanism to temporarily place tasks on CPUs
+	  with higher capacity than those where a task would have normally
+	  ended up with their load characteristics.
+
+config SCHED_HMP
+	bool "Scheduler support for heterogenous multi-processor systems"
+	select SCHED_BOOST
+	depends on SMP && FAIR_GROUP_SCHED
+	help
+	  This feature will let the scheduler optimize task placement on
+	  systems made of heterogeneous cpus i.e cpus that differ either
+	  in their instructions per-cycle capability or the maximum
+	  frequency they can attain.
+
+config SCHED_HMP_CSTATE_AWARE
+	bool "CPU C-state aware scheduler"
+	depends on SCHED_HMP
+	help
+	  This feature will let the HMP scheduler optimize task placement
+	  with CPUs C-state. If this is enabled, scheduler places tasks
+	  onto the shallowest C-state CPU among the most power efficient CPUs.
+
+config SCHED_CORE_CTL
+	bool "QTI Core Control"
+	depends on SMP
+	help
+	  This options enables the core control functionality in
+	  the scheduler. Core control automatically offline and
+	  online cores based on cpu load and utilization.
+
+	  If unsure, say N here.
+
 config CHECKPOINT_RESTORE
 	bool "Checkpoint/restore support" if EXPERT
 	select PROC_CHILDREN
@@ -1356,6 +1391,7 @@ config CPUSETS_ASSIST
 
 config DYNAMIC_STUNE_BOOST
 	bool "Dynamic SchedTune boosting support"
+	select SCHED_BOOST
 	depends on SCHED_TUNE
 	help
 	  This option extends the SchedTune framework and provides APIs to
