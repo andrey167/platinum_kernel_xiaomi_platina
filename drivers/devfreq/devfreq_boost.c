@@ -297,11 +297,8 @@ static int __init devfreq_boost_init(void)
 
 
 
-		#ifdef CONFIG_ANDROID_VENDOR_HOOKS
-		    thread[i] = kthread_run_perf_critical(devfreq_boost_thread, b, "devfreq_boostd/%d", i);
-		#else
-		    thread[i] = kthread_run(devfreq_boost_thread, b, "devfreq_boostd/%d", i);
-		#endif
+		thread[i] = kthread_run_perf_critical(devfreq_boost_thread, b,
+						      "devfreq_boostd/%d", i);
 
 		if (IS_ERR(thread[i])) {
 			ret = PTR_ERR(thread[i]);
