@@ -130,9 +130,14 @@ void device_pm_add(struct device *dev)
 	mutex_lock(&dpm_list_mtx);
 #if 0
 	if (dev->parent && dev->parent->power.is_prepared)
+
 	pr_debug("PM: parent %s should not be sleeping\n",
 			dev_name(dev->parent));
 #endif
+
+
+		pr_debug("%s: parent %s should not be sleeping\n",
+ 			dev, dev_name(dev->parent));
 
 	list_add_tail(&dev->power.entry, &dpm_list);
 	mutex_unlock(&dpm_list_mtx);
