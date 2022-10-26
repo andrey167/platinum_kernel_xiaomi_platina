@@ -60,6 +60,19 @@ config IOSCHED_BFQ
 	a low latency to interactive and soft real-time applications.
 	Details in Documentation/block/bfq-iosched.txt
 
+config IOSCHED_ANXIETY
+	tristate "Anxiety I/O Scheduler"
+	default y
+	---help---
+	  Anxiety is a low-latency I/O scheduler designed for use in
+	  embedded devices with flash storage. It attempts to provide
+	  unfair request bias, batching synchronous requests together
+	  at the expense of delaying asyncrhonous requests. By
+	  definition, synchronous requests are essentially "holding up"
+	  the current processes until they are dispatched. By biasing
+	  and batching synchronous requests, process initialization is
+	  expedited.
+
 config BFQ_GROUP_IOSCHED
 	bool "BFQ hierarchical scheduling support"
 	depends on IOSCHED_BFQ && BLK_CGROUP
@@ -95,6 +108,9 @@ choice
 	config DEFAULT_NOOP
 		bool "No-op"
 
+
+config DEFAULT_ANXIETY
+		bool "Anxiety" if IOSCHED_ANXIETY=y
 endchoice
 
 config DEFAULT_IOSCHED
@@ -103,6 +119,7 @@ config DEFAULT_IOSCHED
 	default "cfq" if DEFAULT_CFQ
 	default "bfq" if DEFAULT_BFQ
 	default "noop" if DEFAULT_NOOP
+    default "anxiety" if DEFAULT_ANXIETY
 
 endmenu
 
