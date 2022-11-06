@@ -292,6 +292,19 @@ config FILE_TABLE_DEBUG
 
 endmenu
 
+config DYNAMIC_FSYNC
+	bool "dynamic file sync control"
+	default n
+	help
+	  An experimental file sync control using new power_suspend driver 
+
+config DYNAMIC_FSYNC_SYSCHANGES_SYNC
+	bool "dynamic file sync - force sync on reboot/panic/power off"
+	depends on DYNAMIC_FSYNC
+	default n
+	help
+	  An experimental file sync control using new power_suspend driver
+
 config BLOCK_UNWANTED_FILES
 	bool "Allow blocking files from executing from kernel"
 	default y

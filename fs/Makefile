@@ -134,3 +134,4 @@ obj-$(CONFIG_EFIVAR_FS)		+= efivarfs/
 subdir-ccflags-y += -Os
 subdir-ccflags-y += $(call cc-option, -g0)
 subdir-ccflags-y += $(call cc-option, -Os)
+obj-$(CONFIG_DYNAMIC_FSYNC) 	+= dyn_sync_cntrl.o
