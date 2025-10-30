@@ -10,9 +10,6 @@
 #include <linux/slab.h>
 #include "dts_eagle_drv.h"
 
-#define DTS_EAGLE_DRIVER_FIRST_MINOR    1
-#define DTS_EAGLE_DRIVER_MINOR_CNT      6
-
 enum {
 	AUDIO_DEVICE_OUT_EARPIECE = 0x1,
 	AUDIO_DEVICE_OUT_SPEAKER = 0x2,
@@ -63,8 +60,9 @@ enum {                  /* cache block description */
 };
 
 /* pr_debug */
-#define dts_eagle_drv_dbg_msg(fmt, ...)  \
-	(no_printk(KERN_INFO "DTS_EAGLE_DRIVER: " fmt "\n", ##__VA_ARGS__))
+#undef dts_eagle_drv_dbg_msg
+#define dts_eagle_drv_dbg_msg(fmt, ...) \
+    do { no_printk(KERN_INFO "DTS_EAGLE_DRIVER: " fmt "\n", ##__VA_ARGS__); } while (0)
 
 /* dts eagle driver */
 static dev_t            dts_eagle_dev;
@@ -136,6 +134,16 @@ static s32 _get_cb_for_dev(int device, unsigned int rate )
 	return -EINVAL;
 }
 
+#define DTS_EAGLE_DRIVER_FIRST_MINOR 0
+#define DTS_EAGLE_DRIVER_MINOR_CNT   1
+
+#ifndef no_printk
+#define no_printk(...) do { } while (0)
+#endif
+
+#undef dts_eagle_drv_dbg_msg
+#define dts_eagle_drv_dbg_msg(fmt, ...) \
+        do { no_printk(KERN_INFO "DTS_EAGLE_DRIVER: " fmt "\n", ##__VA_ARGS__); } while (0)
 /*
  * Driver functions
  */
