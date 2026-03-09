@@ -472,6 +472,7 @@ static ssize_t down_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 
 static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 				      const char *buf, size_t count)
+					  
 {
 	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
 	struct sugov_policy *sg_policy;
@@ -666,8 +667,8 @@ static int sugov_init(struct cpufreq_policy *policy)
 	} else {
 		unsigned int lat;
 
-                tunables->up_rate_limit_us = LATENCY_MULTIPLIER;
-                tunables->down_rate_limit_us = LATENCY_MULTIPLIER;
+                tunables->up_rate_limit_us = 500;
+                tunables->down_rate_limit_us = 20000;
 		lat = policy->cpuinfo.transition_latency / NSEC_PER_USEC;
 		if (lat) {
                         tunables->up_rate_limit_us *= lat;
