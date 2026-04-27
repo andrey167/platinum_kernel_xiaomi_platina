@@ -944,7 +944,8 @@ int dma_async_device_register(struct dma_device *device)
 		device->privatecnt++;	/* Always private */
 	dma_channel_rebalance();
 	mutex_unlock(&dma_list_mutex);
-
+if (!chancnt)
+		kfree(idr_ref);
 	return 0;
 
 err_out:
