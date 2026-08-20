@@ -10,15 +10,20 @@
 #include <linux/input.h>
 #include <linux/kthread.h>
 #include <linux/moduleparam.h>
+#include <linux/slab.h>
+
+#ifdef CONFIG_KPROFILES
+#include <linux/kprofiles.h>
+#endif
 
 static unsigned int msm_cpubw_boost_freq = CONFIG_DEVFREQ_MSM_CPUBW_BOOST_FREQ;
 static unsigned short input_boost_duration = CONFIG_DEVFREQ_INPUT_BOOST_DURATION_MS;
 static unsigned short wake_boost_duration = CONFIG_DEVFREQ_WAKE_BOOST_DURATION_MS;
 
-
 module_param(msm_cpubw_boost_freq, uint, 0644);
 module_param(input_boost_duration, short, 0644);
 module_param(wake_boost_duration, short, 0644);
+
 enum {
 	SCREEN_OFF,
 	INPUT_BOOST,
@@ -43,16 +48,16 @@ struct df_boost_drv {
 static void devfreq_input_unboost(struct work_struct *work);
 static void devfreq_max_unboost(struct work_struct *work);
 
-#define BOOST_DEV_INIT(b, dev, freq) .devices[dev] = {				\
-	.input_unboost =							\
-		__DELAYED_WORK_INITIALIZER((b).devices[dev].input_unboost,	\
-					   devfreq_input_unboost, 0),		\
-	.max_unboost =								\
-		__DELAYED_WORK_INITIALIZER((b).devices[dev].max_unboost,	\
-					   devfreq_max_unboost, 0),		\
-	.boost_waitq =								\
-		__WAIT_QUEUE_HEAD_INITIALIZER((b).devices[dev].boost_waitq),	\
-	.boost_freq = freq							\
+#define BOOST_DEV_INIT(b, dev, freq) .devices[dev] = {     \
+	.input_unboost =                                        \
+		__DELAYED_WORK_INITIALIZER((b).devices[dev].input_unboost,  \
+					   devfreq_input_unboost, 0),   \
+	.max_unboost =                                          \
+		__DELAYED_WORK_INITIALIZER((b).devices[dev].max_unboost,    \
+					   devfreq_max_unboost, 0),     \
+	.boost_waitq =                                          \
+		__WAIT_QUEUE_HEAD_INITIALIZER((b).devices[dev].boost_waitq),    \
+	.boost_freq = freq                                      \
 }
 
 static struct df_boost_drv df_boost_drv_g __read_mostly = {
@@ -62,12 +67,27 @@ static struct df_boost_drv df_boost_drv_g __read_mostly = {
 
 static void __devfreq_boost_kick(struct boost_dev *b)
 {
+	unsigned int duration = input_boost_duration;
+
 	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state))
 		return;
 
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery — отключаем буст шины данных */
+		return;
+	case 0: /* Disabled */
+	case 2: /* Balanced */
+		break;
+	case 3: /* Performance — увеличиваем длительность буста шины */
+		duration = (duration * 3) / 2;
+		break;
+	}
+#endif
+
 	set_bit(INPUT_BOOST, &b->state);
 	if (!mod_delayed_work(system_unbound_wq, &b->input_unboost,
-		msecs_to_jiffies(input_boost_duration)))
+			      msecs_to_jiffies(duration)))
 		wake_up(&b->boost_waitq);
 }
 
@@ -81,11 +101,27 @@ void devfreq_boost_kick(enum df_device device)
 static void __devfreq_boost_kick_max(struct boost_dev *b,
 				     unsigned int duration_ms)
 {
-	unsigned long boost_jiffies = msecs_to_jiffies(duration_ms);
+	unsigned long boost_jiffies;
 	unsigned long curr_expires, new_expires;
 
 	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state))
 		return;
+
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery */
+		duration_ms /= 2;
+		break;
+	case 0: /* Disabled */
+	case 2: /* Balanced */
+		break;
+	case 3: /* Performance */
+		duration_ms = (duration_ms * 3) / 2;
+		break;
+	}
+#endif
+
+	boost_jiffies = msecs_to_jiffies(duration_ms);
 
 	do {
 		curr_expires = atomic_long_read(&b->max_boost_expires);
@@ -141,15 +177,31 @@ static void devfreq_max_unboost(struct work_struct *work)
 static void devfreq_update_boosts(struct boost_dev *b, unsigned long state)
 {
 	struct devfreq *df = b->df;
+	unsigned long boost_freq = (unsigned long)msm_cpubw_boost_freq;
+	unsigned long min_freq = 0;
 
 	mutex_lock(&df->lock);
-	if (test_bit(SCREEN_OFF, &state)) {
-		df->min_freq = df->profile->freq_table[0];
+
+	/* Безопасное определение минимальной частоты шины devfreq */
+	if (df->profile && df->profile->freq_table)
+		min_freq = df->profile->freq_table[0];
+
+#ifdef CONFIG_KPROFILES
+	/* В режиме Performance форсируем буст шины памяти на абсолютный максимум */
+	if (active_mode() == 3)
+		boost_freq = df->max_freq;
+#endif
+
+	if (test_bit(SCREEN_OFF, &state)
+#ifdef CONFIG_KPROFILES
+	    || active_mode() == 1 /* Battery: сбрасываем шину на абсолютный минимум */
+#endif
+	) {
+		df->min_freq = min_freq;
 		df->max_boost = false;
 	} else {
 		df->min_freq = test_bit(INPUT_BOOST, &state) ?
-				   min((unsigned long)msm_cpubw_boost_freq, df->max_freq) :
-				   df->profile->freq_table[0];
+			       min(boost_freq, df->max_freq) : min_freq;
 		df->max_boost = test_bit(MAX_BOOST, &state);
 	}
 	update_devfreq(df);
@@ -200,8 +252,7 @@ static int fb_notifier_cb(struct notifier_block *nb, unsigned long action,
 
 		if (*blank == FB_BLANK_UNBLANK) {
 			clear_bit(SCREEN_OFF, &b->state);
-			__devfreq_boost_kick_max(b,
-				wake_boost_duration);
+			__devfreq_boost_kick_max(b, wake_boost_duration);
 		} else {
 			set_bit(SCREEN_OFF, &b->state);
 			wake_up(&b->boost_waitq);
@@ -212,8 +263,8 @@ static int fb_notifier_cb(struct notifier_block *nb, unsigned long action,
 }
 
 static void devfreq_boost_input_event(struct input_handle *handle,
-				      unsigned int type, unsigned int code,
-				      int value)
+				       unsigned int type, unsigned int code,
+				       int value)
 {
 	struct df_boost_drv *d = handle->handler->private;
 	int i;
@@ -223,8 +274,8 @@ static void devfreq_boost_input_event(struct input_handle *handle,
 }
 
 static int devfreq_boost_input_connect(struct input_handler *handler,
-				       struct input_dev *dev,
-				       const struct input_device_id *id)
+					struct input_dev *dev,
+					const struct input_device_id *id)
 {
 	struct input_handle *handle;
 	int ret;
@@ -265,19 +316,19 @@ static const struct input_device_id devfreq_boost_ids[] = {
 	/* Multi-touch touchscreen */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
-			INPUT_DEVICE_ID_MATCH_ABSBIT,
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
 		.evbit = { BIT_MASK(EV_ABS) },
 		.absbit = { [BIT_WORD(ABS_MT_POSITION_X)] =
-			BIT_MASK(ABS_MT_POSITION_X) |
-			BIT_MASK(ABS_MT_POSITION_Y) }
+			 BIT_MASK(ABS_MT_POSITION_X) |
+			 BIT_MASK(ABS_MT_POSITION_Y) }
 	},
 	/* Touchpad */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_KEYBIT |
-			INPUT_DEVICE_ID_MATCH_ABSBIT,
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
 		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
 		.absbit = { [BIT_WORD(ABS_X)] =
-			BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) }
+			 BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) }
 	},
 	/* Keypad */
 	{
@@ -288,11 +339,11 @@ static const struct input_device_id devfreq_boost_ids[] = {
 };
 
 static struct input_handler devfreq_boost_input_handler = {
-	.event		= devfreq_boost_input_event,
-	.connect	= devfreq_boost_input_connect,
-	.disconnect	= devfreq_boost_input_disconnect,
-	.name		= "devfreq_boost_handler",
-	.id_table	= devfreq_boost_ids
+	.event      = devfreq_boost_input_event,
+	.connect    = devfreq_boost_input_connect,
+	.disconnect = devfreq_boost_input_disconnect,
+	.name       = "devfreq_boost_handler",
+	.id_table   = devfreq_boost_ids
 };
 
 static int __init devfreq_boost_init(void)
@@ -303,8 +354,6 @@ static int __init devfreq_boost_init(void)
 
 	for (i = 0; i < DEVFREQ_MAX; i++) {
 		struct boost_dev *b = d->devices + i;
-
-
 
 		thread[i] = kthread_run_perf_critical(devfreq_boost_thread, b,
 						      "devfreq_boostd/%d", i);
