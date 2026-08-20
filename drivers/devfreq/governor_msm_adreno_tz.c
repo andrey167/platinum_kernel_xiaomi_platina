@@ -24,6 +24,10 @@
 #include <soc/qcom/scm.h>
 #include "governor.h"
 
+#ifdef CONFIG_KPROFILES
+#include <linux/kprofiles.h>
+#endif
+
 static DEFINE_SPINLOCK(tz_lock);
 static DEFINE_SPINLOCK(sample_lock);
 static DEFINE_SPINLOCK(suspend_lock);
@@ -31,21 +35,21 @@ static DEFINE_SPINLOCK(suspend_lock);
  * FLOOR is 5msec to capture up to 3 re-draws
  * per frame for 60fps content.
  */
-#define FLOOR		        5000
+#define FLOOR           5000
 /*
  * MIN_BUSY is 1 msec for the sample to be sent
  */
-#define MIN_BUSY		1000
-#define MAX_TZ_VERSION		0
+#define MIN_BUSY        1000
+#define MAX_TZ_VERSION      0
 
 /*
  * CEILING is 40msec, larger than any standard
  * frame length, but less than the idle timer.
  */
-#define CEILING			40000
-#define TZ_RESET_ID		0x3
-#define TZ_UPDATE_ID		0x4
-#define TZ_INIT_ID		0x6
+#define CEILING         40000
+#define TZ_RESET_ID     0x3
+#define TZ_UPDATE_ID        0x4
+#define TZ_INIT_ID      0x6
 
 #define TZ_RESET_ID_64          0x7
 #define TZ_UPDATE_ID_64         0x8
@@ -166,7 +170,7 @@ static ssize_t suspend_time_show(struct device *dev,
 #if 1
 static DEVICE_ATTR(adrenoboost, 0644,
 		adrenoboost_show, adrenoboost_save);
-		#endif
+#endif
 
 static DEVICE_ATTR(gpu_load, 0444, gpu_load_show, NULL);
 
@@ -205,7 +209,7 @@ void compute_work_load(struct devfreq_dev_status *stats,
 
 /* Trap into the TrustZone, and call funcs there. */
 static int __secure_tz_reset_entry2(unsigned int *scm_data, u32 size_scm_data,
-					bool is_64)
+		    bool is_64)
 {
 	int ret;
 	/* sync memory before sending the commands to tz */
@@ -221,7 +225,7 @@ static int __secure_tz_reset_entry2(unsigned int *scm_data, u32 size_scm_data,
 			struct scm_desc desc = {0};
 			desc.arginfo = 0;
 			ret = scm_call2(SCM_SIP_FNID(SCM_SVC_DCVS,
-					 TZ_RESET_ID_64), &desc);
+				     TZ_RESET_ID_64), &desc);
 		} else {
 			ret = scm_call(SCM_SVC_DCVS, TZ_RESET_ID_64, scm_data,
 				size_scm_data, NULL, 0);
@@ -388,9 +392,7 @@ extern int simple_gpu_algorithm(int level, int *val,
 				struct devfreq_msm_adreno_tz_data *priv);
 #endif
 
-
 #if 1
-
 // mapping gpu level calculated linear conservation half curve values into a
 // bell curve of conservation  (lower is higher freq level)
 static int conservation_map_up[] = {15,15,10,4,5,6,12     ,5,5,5};
@@ -407,7 +409,6 @@ static int lvl_divider_map_2[] = {10,1,1,1,1,14,12    ,1,1};
 // for boost == 3 -- boost divide on the low spectrum, dampen the lower freq values, unneeded to boost the low freq spectrum so much at start
 static int lvl_multiplicator_map_3[] = {10,1,1,1,1,11,9    ,1,1};
 static int lvl_divider_map_3[] = {10,1,1,1,1,15,13    ,1,1};
-
 #endif
 
 static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
@@ -421,8 +422,26 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
 	int context_count = 0;
 #if 1
 	int last_level = priv->bin.last_level;
-//	int max_state_val = devfreq->profile->max_state - 1;
+	unsigned int local_adrenoboost = adrenoboost;
 #endif
+
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery — отключаем adrenoboost полностью */
+		local_adrenoboost = 0;
+		break;
+	case 2: /* Balanced — устанавливаем нормальный буст */
+		local_adrenoboost = 1;
+		break;
+	case 3: /* Performance — максимальный буст GPU */
+		local_adrenoboost = 3;
+		break;
+	case 0: /* Disabled — оставляем ручное значение adrenoboost */
+	default:
+		break;
+	}
+#endif
+
 	/* keeps stats.private_data == NULL   */
 	result = devfreq->profile->get_dev_status(devfreq->dev.parent, &stats);
 	if (result) {
@@ -444,11 +463,11 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
 	priv->bin.total_time += stats.total_time;
 	#if 1
 	// scale busy time up based on adrenoboost parameter, only if MIN_BUSY exceeded...
-	if ((unsigned int)(priv->bin.busy_time + stats.busy_time) >= MIN_BUSY && adrenoboost) {
-		if (adrenoboost == 1) {
-			priv->bin.busy_time += (unsigned int)((stats.busy_time * ( 1 + adrenoboost ) * lvl_multiplicator_map_1[ last_level ]) / lvl_divider_map_1[ last_level ]);
+	if ((unsigned int)(priv->bin.busy_time + stats.busy_time) >= MIN_BUSY && local_adrenoboost) {
+		if (local_adrenoboost == 1) {
+			priv->bin.busy_time += (unsigned int)((stats.busy_time * ( 1 + local_adrenoboost ) * lvl_multiplicator_map_1[ last_level ]) / lvl_divider_map_1[ last_level ]);
 		} else
-		if (adrenoboost == 2) {
+		if (local_adrenoboost == 2) {
 			priv->bin.busy_time += (unsigned int)((stats.busy_time * ( 1 + 3 ) * lvl_multiplicator_map_2[ last_level ]  * 8 ) / (lvl_divider_map_2[ last_level ] * 10));
 		} else {
 			priv->bin.busy_time += (unsigned int)((stats.busy_time * ( 1 + 4 ) * lvl_multiplicator_map_3[ last_level ]  * 9 ) / (lvl_divider_map_3[ last_level ] * 10));
@@ -472,8 +491,8 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
 	 * busier than MIN_BUSY.
 	 */
 	if ((stats.total_time == 0) ||
-		(priv->bin.total_time < FLOOR) ||
-		(unsigned int) priv->bin.busy_time < MIN_BUSY) {
+	    (priv->bin.total_time < FLOOR) ||
+	    (unsigned int) priv->bin.busy_time < MIN_BUSY) {
 		return 0;
 	}
 
@@ -488,7 +507,7 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
 	 * increase frequency.  Otherwise run the normal algorithm.
 	 */
 	if (!priv->disable_busy_time_burst &&
-			priv->bin.busy_time > CEILING) {
+	    priv->bin.busy_time > CEILING) {
 		val = -1 * level;
 	} else {
 
@@ -520,11 +539,11 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq,
 	 * frequency changes.
 	 */
 #if 1
-	if (!adrenoboost && val) {
+	if (!local_adrenoboost && val) {
 		level += val;
 		level = max(level, 0);
 		level = min_t(int, level, devfreq->profile->max_state - 1);
-		} else {
+	} else {
 		if (val) {
 			priv->bin.cycles_keeping_level += 1 + abs(val/2); // higher value change quantity means more addition to cycles_keeping_level for easier switching
 			// going upwards in frequency -- make it harder on the low and high freqs, middle ground - let it move
@@ -762,7 +781,6 @@ static void do_partner_resume_event(struct work_struct *work)
 {
 	_do_partner_event(work, DEVFREQ_GOV_RESUME);
 }
-
 
 static struct devfreq_governor msm_adreno_tz = {
 	.name = "msm-adreno-tz",
