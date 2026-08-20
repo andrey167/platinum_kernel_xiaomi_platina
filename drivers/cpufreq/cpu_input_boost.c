@@ -11,6 +11,11 @@
 #include <linux/input.h>
 #include <linux/kthread.h>
 #include <linux/moduleparam.h>
+#include <linux/slab.h>
+
+#ifdef CONFIG_KPROFILES
+#include <linux/kprofiles.h>
+#endif
 
 unsigned int input_boost_freq_lp = CONFIG_INPUT_BOOST_FREQ_LP;
 unsigned int input_boost_freq_hp = CONFIG_INPUT_BOOST_FREQ_PERF;
@@ -51,6 +56,12 @@ static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 {
 	unsigned int freq;
 
+#ifdef CONFIG_KPROFILES
+	/* В режиме Performance выставляем абсолютный максимум CPU */
+	if (active_mode() == 3)
+		return policy->max;
+#endif
+
 	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
 		freq = input_boost_freq_lp;
 	else
@@ -78,20 +89,38 @@ static void update_online_cpu_policy(void)
 	/* Only one CPU from each cluster needs to be updated */
 	get_online_cpus();
 	cpu = cpumask_first_and(cpu_lp_mask, cpu_online_mask);
-	cpufreq_update_policy(cpu);
+	if (cpu < nr_cpu_ids)
+		cpufreq_update_policy(cpu);
+
 	cpu = cpumask_first_and(cpu_perf_mask, cpu_online_mask);
-	cpufreq_update_policy(cpu);
+	if (cpu < nr_cpu_ids)
+		cpufreq_update_policy(cpu);
 	put_online_cpus();
 }
 
 static void __cpu_input_boost_kick(struct boost_drv *b)
 {
+	unsigned int duration = input_boost_duration;
+
 	if (test_bit(SCREEN_OFF, &b->state))
 		return;
 
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery — полностью отключаем буст при касаниях */
+		return;
+	case 0: /* Disabled */
+	case 2: /* Balanced */
+		break;
+	case 3: /* Performance — увеличиваем время буста в 1.5 раза */
+		duration = (duration * 3) / 2;
+		break;
+	}
+#endif
+
 	set_bit(INPUT_BOOST, &b->state);
 	if (!mod_delayed_work(system_unbound_wq, &b->input_unboost,
-			      msecs_to_jiffies(input_boost_duration)))
+			      msecs_to_jiffies(duration)))
 		wake_up(&b->boost_waitq);
 }
 
@@ -103,13 +132,29 @@ void cpu_input_boost_kick(void)
 }
 
 static void __cpu_input_boost_kick_max(struct boost_drv *b,
-				       unsigned int duration_ms)
+					unsigned int duration_ms)
 {
-	unsigned long boost_jiffies = msecs_to_jiffies(duration_ms);
+	unsigned long boost_jiffies;
 	unsigned long curr_expires, new_expires;
 
 	if (test_bit(SCREEN_OFF, &b->state))
 		return;
+
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery — сокращаем длительность максимального буста в 2 раза */
+		duration_ms /= 2;
+		break;
+	case 0: /* Disabled */
+	case 2: /* Balanced */
+		break;
+	case 3: /* Performance — увеличиваем длительность максимального буста в 1.5 раза */
+		duration_ms = (duration_ms * 3) / 2;
+		break;
+	}
+#endif
+
+	boost_jiffies = msecs_to_jiffies(duration_ms);
 
 	do {
 		curr_expires = atomic_long_read(&b->max_boost_expires);
@@ -189,8 +234,12 @@ static int cpu_notifier_cb(struct notifier_block *nb, unsigned long action,
 	if (action != CPUFREQ_ADJUST)
 		return NOTIFY_OK;
 
-	/* Unboost when the screen is off */
-	if (test_bit(SCREEN_OFF, &b->state)) {
+	/* Unboost when screen is off or in Battery mode */
+	if (test_bit(SCREEN_OFF, &b->state)
+#ifdef CONFIG_KPROFILES
+	    || active_mode() == 1
+#endif
+	) {
 		policy->min = policy->cpuinfo.min_freq;
 		return NOTIFY_OK;
 	}
@@ -236,8 +285,8 @@ static int fb_notifier_cb(struct notifier_block *nb, unsigned long action,
 }
 
 static void cpu_input_boost_input_event(struct input_handle *handle,
-					unsigned int type, unsigned int code,
-					int value)
+					 unsigned int type, unsigned int code,
+					 int value)
 {
 	struct boost_drv *b = handle->handler->private;
 
@@ -245,8 +294,8 @@ static void cpu_input_boost_input_event(struct input_handle *handle,
 }
 
 static int cpu_input_boost_input_connect(struct input_handler *handler,
-					 struct input_dev *dev,
-					 const struct input_device_id *id)
+					  struct input_dev *dev,
+					  const struct input_device_id *id)
 {
 	struct input_handle *handle;
 	int ret;
@@ -287,19 +336,19 @@ static const struct input_device_id cpu_input_boost_ids[] = {
 	/* Multi-touch touchscreen */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
-			INPUT_DEVICE_ID_MATCH_ABSBIT,
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
 		.evbit = { BIT_MASK(EV_ABS) },
 		.absbit = { [BIT_WORD(ABS_MT_POSITION_X)] =
-			BIT_MASK(ABS_MT_POSITION_X) |
-			BIT_MASK(ABS_MT_POSITION_Y) }
+			 BIT_MASK(ABS_MT_POSITION_X) |
+			 BIT_MASK(ABS_MT_POSITION_Y) }
 	},
 	/* Touchpad */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_KEYBIT |
-			INPUT_DEVICE_ID_MATCH_ABSBIT,
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
 		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
 		.absbit = { [BIT_WORD(ABS_X)] =
-			BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) }
+			 BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) }
 	},
 	/* Keypad */
 	{
@@ -310,11 +359,11 @@ static const struct input_device_id cpu_input_boost_ids[] = {
 };
 
 static struct input_handler cpu_input_boost_input_handler = {
-	.event		= cpu_input_boost_input_event,
-	.connect	= cpu_input_boost_input_connect,
-	.disconnect	= cpu_input_boost_input_disconnect,
-	.name		= "cpu_input_boost_handler",
-	.id_table	= cpu_input_boost_ids
+	.event      = cpu_input_boost_input_event,
+	.connect    = cpu_input_boost_input_connect,
+	.disconnect = cpu_input_boost_input_disconnect,
+	.name       = "cpu_input_boost_handler",
+	.id_table   = cpu_input_boost_ids
 };
 
 static int __init cpu_input_boost_init(void)
