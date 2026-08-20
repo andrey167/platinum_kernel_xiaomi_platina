@@ -192,4 +192,4 @@ obj-$(CONFIG_TEE)		+= tee/
 subdir-ccflags-y += $(call cc-option, -g0)
 subdir-ccflags-y += $(call cc-option, -Os)
 
-obj-$(CONFIG_AINUR_DTS_SW) += dts_eagle_drv.o
+obj-$(CONFIG_AINUR_DTS_SW) += dts_eagle/
