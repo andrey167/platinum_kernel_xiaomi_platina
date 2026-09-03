@@ -739,7 +739,7 @@ boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
 }
 
 
-static void schedtune_attach(struct cgroup_taskset *tset)
+static void __maybe_unused schedtune_attach(struct cgroup_taskset *tset)
 {
 #ifdef CONFIG_SCHED_HMP
 	struct task_struct *task;
@@ -873,7 +873,7 @@ schedtune_boostgroup_init(struct schedtune *st, int idx)
 	boost_slots_init(st);
 #endif // CONFIG_DYNAMIC_STUNE_BOOST
 
-	return 0;
+	return;
 }
 
 static struct cgroup_subsys_state *
