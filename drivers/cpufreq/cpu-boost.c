@@ -23,6 +23,10 @@
 #include <linux/input.h>
 #include <linux/time.h>
 
+#ifdef CONFIG_KPROFILES
+#include <linux/kprofiles.h>
+#endif
+
 struct cpu_sync {
 	int cpu;
 	unsigned int input_boost_min;
@@ -35,7 +39,7 @@ static struct workqueue_struct *cpu_boost_wq;
 static struct work_struct input_boost_work;
 static bool input_boost_enabled;
 
-static unsigned int input_boost_ms = 40;
+static unsigned int input_boost_ms = 64;
 module_param(input_boost_ms, uint, 0644);
 
 static bool sched_boost_on_input;
@@ -44,7 +48,7 @@ module_param(sched_boost_on_input, bool, 0644);
 static bool sched_boost_active;
 
 #ifdef CONFIG_DYNAMIC_STUNE_BOOST
-static int dynamic_stune_boost;
+static int dynamic_stune_boost = 15;
 module_param(dynamic_stune_boost, uint, 0644);
 static bool stune_boost_active;
 static int boost_slot;
@@ -123,7 +127,6 @@ static const struct kernel_param_ops param_ops_input_boost_freq = {
 	.get = get_input_boost_freq,
 };
 module_param_cb(input_boost_freq, &param_ops_input_boost_freq, NULL, 0644);
-
 /*
  * The CPUFREQ_ADJUST notifier is used to override the current policy min to
  * make sure policy min >= boost_min. The cpufreq framework then does the job
@@ -145,6 +148,21 @@ static int boost_adjust_notify(struct notifier_block *nb, unsigned long val,
 
 	switch (val) {
 	case CPUFREQ_ADJUST:
+#ifdef CONFIG_KPROFILES
+		/* 1: Battery */
+		if (active_mode() == 1) {
+			policy->min = policy->cpuinfo.min_freq;
+			break;
+		}
+
+		/* 3: Performance */
+		if (active_mode() == 3) {
+			cpufreq_verify_within_limits(policy, policy->max, UINT_MAX);
+			break;
+		}
+#endif
+
+		/* 2 (Balanced)  */
 		if (!ib_min)
 			break;
 
@@ -217,11 +235,42 @@ static void do_input_boost(struct work_struct *work)
 {
 	unsigned int i, ret;
 	struct cpu_sync *i_sync_info;
+	unsigned int duration_ms = input_boost_ms;
+#ifdef CONFIG_DYNAMIC_STUNE_BOOST
+	int current_stune_boost = dynamic_stune_boost;
+	unsigned int stune_duration_ms = dynamic_stune_boost_ms;
+#endif
+
+#ifdef CONFIG_KPROFILES
+	switch (active_mode()) {
+	case 1: /* Battery  */
+#ifdef CONFIG_DYNAMIC_STUNE_BOOST
+		if (stune_boost_active) {
+			reset_stune_boost("top-app", boost_slot);
+			stune_boost_active = false;
+		}
+#endif
+		return;
+	case 0: /* Disabled */
+	case 2: /* Balanced */
+		break;
+	case 3: /* Performance  */
+		duration_ms = (duration_ms * 3) / 2;
+#ifdef CONFIG_DYNAMIC_STUNE_BOOST
+		current_stune_boost = current_stune_boost * 2;
+		if (current_stune_boost > 100)
+			current_stune_boost = 100;
+		stune_duration_ms = (stune_duration_ms * 3) / 2;
+#endif
+		break;
+	}
+#endif
 
 #ifdef CONFIG_DYNAMIC_STUNE_BOOST
 	cancel_delayed_work_sync(&dynamic_stune_boost_rem);
 #endif /* CONFIG_DYNAMIC_STUNE_BOOST */
 	cancel_delayed_work_sync(&input_boost_rem);
+
 	if (sched_boost_active) {
 		sched_set_boost(0);
 		sched_boost_active = false;
@@ -243,7 +292,11 @@ static void do_input_boost(struct work_struct *work)
 	update_policy_online();
 
 	/* Enable scheduler boost to migrate tasks to big cluster */
-	if (sched_boost_on_input) {
+	if (sched_boost_on_input
+#ifdef CONFIG_KPROFILES
+		&& active_mode() != 1
+#endif
+	) {
 		ret = sched_set_boost(1);
 		if (ret)
 			pr_err("cpu-boost: HMP boost enable failed\n");
@@ -252,17 +305,24 @@ static void do_input_boost(struct work_struct *work)
 	}
 
 #ifdef CONFIG_DYNAMIC_STUNE_BOOST
-	/* Set dynamic stune boost value */
-	ret = do_stune_boost("top-app", dynamic_stune_boost, &boost_slot);
-	if (!ret)
-		stune_boost_active = true;
+	if (
+#ifdef CONFIG_KPROFILES
+		active_mode() != 1
+#else
+		true
+#endif
+	) {
+		ret = do_stune_boost("top-app", current_stune_boost, &boost_slot);
+		if (!ret)
+			stune_boost_active = true;
 
-	queue_delayed_work(cpu_boost_wq, &dynamic_stune_boost_rem,
-					msecs_to_jiffies(dynamic_stune_boost_ms));
+		queue_delayed_work(cpu_boost_wq, &dynamic_stune_boost_rem,
+						msecs_to_jiffies(stune_duration_ms));
+	}
 #endif /* CONFIG_DYNAMIC_STUNE_BOOST */
 
 	queue_delayed_work(cpu_boost_wq, &input_boost_rem,
-					msecs_to_jiffies(input_boost_ms));
+					msecs_to_jiffies(duration_ms));
 }
 
 static void cpuboost_input_event(struct input_handle *handle,
@@ -272,6 +332,11 @@ static void cpuboost_input_event(struct input_handle *handle,
 
 	if (!input_boost_enabled)
 		return;
+
+#ifdef CONFIG_KPROFILES
+	if (active_mode() == 1)
+		return;
+#endif
 
 	now = ktime_to_us(ktime_get());
 	if (now - last_input_time < MIN_INPUT_INTERVAL)
@@ -317,7 +382,6 @@ err2:
 static void cpuboost_input_disconnect(struct input_handle *handle)
 {
 #ifdef CONFIG_DYNAMIC_STUNE_BOOST
-	/* Reset dynamic stune boost value to the default value */
 	reset_stune_boost("top-app", boost_slot);
 #endif /* CONFIG_DYNAMIC_STUNE_BOOST */
 
@@ -378,7 +442,16 @@ static int cpu_boost_init(void)
 	for_each_possible_cpu(cpu) {
 		s = &per_cpu(sync_info, cpu);
 		s->cpu = cpu;
+
+		/* default for Balanced */
+		if (cpu < 4)
+			s->input_boost_freq = 1113600; /* LITTLE (0-3) */
+		else
+			s->input_boost_freq = 1401600; /* BIG (4-7) */
 	}
+
+	input_boost_enabled = true;
+
 	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
 	ret = input_register_handler(&cpuboost_input_handler);
 
