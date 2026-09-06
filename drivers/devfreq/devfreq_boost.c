@@ -74,12 +74,12 @@ static void __devfreq_boost_kick(struct boost_dev *b)
 
 #ifdef CONFIG_KPROFILES
 	switch (active_mode()) {
-	case 1: /* Battery — отключаем буст шины данных */
+	case 1: /* Battery  */
 		return;
 	case 0: /* Disabled */
 	case 2: /* Balanced */
 		break;
-	case 3: /* Performance — увеличиваем длительность буста шины */
+	case 3: /* Performance  */
 		duration = (duration * 3) / 2;
 		break;
 	}
@@ -187,14 +187,14 @@ static void devfreq_update_boosts(struct boost_dev *b, unsigned long state)
 		min_freq = df->profile->freq_table[0];
 
 #ifdef CONFIG_KPROFILES
-	/* В режиме Performance форсируем буст шины памяти на абсолютный максимум */
+	/*  Performance */
 	if (active_mode() == 3)
 		boost_freq = df->max_freq;
 #endif
 
 	if (test_bit(SCREEN_OFF, &state)
 #ifdef CONFIG_KPROFILES
-	    || active_mode() == 1 /* Battery: сбрасываем шину на абсолютный минимум */
+	    || active_mode() == 1 /* Battery: */
 #endif
 	) {
 		df->min_freq = min_freq;
