@@ -54,20 +54,35 @@ static struct boost_drv boost_drv_g __read_mostly = {
 
 static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 {
-	unsigned int freq;
+    unsigned int freq;
 
 #ifdef CONFIG_KPROFILES
-	/* В режиме Performance выставляем абсолютный максимум CPU */
-	if (active_mode() == 3)
-		return policy->max;
+    int mode = active_mode();
+
+    /* on Performance mode use maximum freg */
+    if (mode == 3)
+        return policy->max;
+
+    /*  Balanced (2) 1.1 Ghz  1.4 Ghz */
+    if (mode == 2) {
+        if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
+            freq = 1113600; /* 1.1 GHz for little cluster */
+        else
+            freq = 1401600; /* 1.4 GHz for big cluster */
+        return min(freq, policy->max);
+    }
+
+    /* Disable boost on battery mode */
+    if (mode == 1)
+        return policy->cpuinfo.min_freq;
 #endif
 
-	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
-		freq = input_boost_freq_lp;
-	else
-		freq = input_boost_freq_hp;
+    if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
+        freq = input_boost_freq_lp;
+    else
+        freq = input_boost_freq_hp;
 
-	return min(freq, policy->max);
+    return min(freq, policy->max);
 }
 
 static unsigned int get_max_boost_freq(struct cpufreq_policy *policy)
@@ -107,12 +122,12 @@ static void __cpu_input_boost_kick(struct boost_drv *b)
 
 #ifdef CONFIG_KPROFILES
 	switch (active_mode()) {
-	case 1: /* Battery — полностью отключаем буст при касаниях */
+	case 1: /* Battery  */
 		return;
 	case 0: /* Disabled */
 	case 2: /* Balanced */
 		break;
-	case 3: /* Performance — увеличиваем время буста в 1.5 раза */
+	case 3: /* Performance  */
 		duration = (duration * 3) / 2;
 		break;
 	}
@@ -142,13 +157,13 @@ static void __cpu_input_boost_kick_max(struct boost_drv *b,
 
 #ifdef CONFIG_KPROFILES
 	switch (active_mode()) {
-	case 1: /* Battery — сокращаем длительность максимального буста в 2 раза */
+	case 1: /* Battery  */
 		duration_ms /= 2;
 		break;
 	case 0: /* Disabled */
 	case 2: /* Balanced */
 		break;
-	case 3: /* Performance — увеличиваем длительность максимального буста в 1.5 раза */
+	case 3: /* Performance  */
 		duration_ms = (duration_ms * 3) / 2;
 		break;
 	}
